@@ -3,6 +3,7 @@
 /target
 /dependencies
 *.f
+doc/
 
 # Verilator
 obj_dir/

@@ -1,0 +1,78 @@
+/// # Module PSRAM PHY
+///
+/// This module adds DDR and buffers to PSRAM signals,
+/// it ensure that all signals are synchronized.
+
+module PsramPhy (
+    i_clk     : input  clock       ,
+    i_rst     : input  reset       ,
+    i_ce      : input  logic       ,
+    o_clk     : output logic       ,
+    o_ce      : output logic       ,
+    i_data    : input  logic    <8>,
+    o_data    : output logic    <8>,
+    io_data   : inout  tri logic<8>,
+    i_tristate: input  tri logic<8>,
+) {
+
+    var r_clk    : logic   ;
+    var r_ce     : logic   ;
+    var r_outData: logic<8>;
+    var r_inData : logic<8>;
+
+    var r_spare: logic<8>;
+
+    // Clock output DDR register, r_clk signal is inverted
+    inst oddrClk: $sv::CC_ODDR #(
+        CLK_INV: 0 // 0: rising edge, 1: falling edge
+        ,
+    ) (
+        D0 : 0    , // D0 data input
+        D1 : 1    , // D1 data input
+        CLK: i_clk, // Clock input
+        DDR: i_clk, // FF switch
+        Q  : r_clk // Data output
+        ,
+    );
+
+    // Chip Enable output DDR register
+    inst oddrCe: $sv::CC_ODDR #(
+        CLK_INV: 0 // 0: rising edge, 1: falling edge
+        ,
+    ) (
+        D0 : i_ce , // D0 data input
+        D1 : 1    , // D1 data input, don't care
+        CLK: i_clk, // Clock input
+        DDR: 0    , // FF switch, don't care about switching
+        Q  : r_ce  // Data output
+        ,
+    );
+
+    // TODO: Must do it 8 times
+    // Data output DDR registers
+    inst oddrData: $sv::CC_ODDR #(
+        CLK_INV: 0 // 0: rising edge, 1: falling edge
+        ,
+    ) (
+        D0 : i_data   , // D0 data input
+        D1 : 0        , // D1 data input, don't care
+        CLK: i_clk    , // Clock input
+        DDR: 0        , // FF switch, don't care about switching
+        Q  : r_outData // Data output
+        ,
+    );
+
+    // Data input DDR registers
+    inst iddrData: $sv::CC_IDDR #(
+        CLK_INV: 0 // 0: rising edge, 1: falling edge
+        ,
+    ) (
+        D  : r_inData, // D0 data input
+        CLK: i_clk   , // Clock input
+        Q0 : r_spare , // Data input, don't care
+        Q1 : o_data   // Data input
+        ,    );
+
+
+    // TODO: Add the buffers
+}
