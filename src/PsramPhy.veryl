@@ -2,6 +2,10 @@
 ///
 /// This module adds DDR and buffers to PSRAM signals,
 /// it ensure that all signals are synchronized.
+///
+/// Note: The IOBUF primitives of CC have a FF parameter which could be doing the same thing. + Delay
+///         TODO: Test without DDR and only with buffers
+/// The drive strength is set to 3mA by default, there is a 22R resistor on clock signal, and a 10k on CS
 
 module PsramPhy (
     i_clk     : input  clock       ,
@@ -12,67 +16,118 @@ module PsramPhy (
     i_data    : input  logic    <8>,
     o_data    : output logic    <8>,
     io_data   : inout  tri logic<8>,
-    i_tristate: input  tri logic<8>,
+    i_tristate: input  logic    <8>,
 ) {
 
-    var r_clk    : logic   ;
-    var r_ce     : logic   ;
-    var r_outData: logic<8>;
-    var r_inData : logic<8>;
+    var ddr_clk    : logic   ;
+    var ddr_ce     : logic   ;
+    var ddr_outData: logic<8>;
+    var ddr_inData : logic<8>;
 
     var r_spare: logic<8>;
 
-    // Clock output DDR register, r_clk signal is inverted
+    // Clock ODDR register, r_clk signal is inverted
     inst oddrClk: $sv::CC_ODDR #(
         CLK_INV: 0 // 0: rising edge, 1: falling edge
         ,
     ) (
-        D0 : 0    , // D0 data input
-        D1 : 1    , // D1 data input
-        CLK: i_clk, // Clock input
-        DDR: i_clk, // FF switch
-        Q  : r_clk // Data output
+        D0 : 0      , // D0 data input
+        D1 : 1      , // D1 data input
+        CLK: i_clk  , // Clock input
+        DDR: i_clk  , // FF switch
+        Q  : ddr_clk // Data output
         ,
     );
 
-    // Chip Enable output DDR register
+    // Chip Enable ODDR register
     inst oddrCe: $sv::CC_ODDR #(
         CLK_INV: 0 // 0: rising edge, 1: falling edge
         ,
     ) (
-        D0 : i_ce , // D0 data input
-        D1 : 1    , // D1 data input, don't care
-        CLK: i_clk, // Clock input
-        DDR: 0    , // FF switch, don't care about switching
-        Q  : r_ce  // Data output
+        D0 : i_ce  , // D0 data input
+        D1 : 1     , // D1 data input, don't care
+        CLK: i_clk , // Clock input
+        DDR: 0     , // FF switch, don't care about switching
+        Q  : ddr_ce // Data output
         ,
     );
 
-    // TODO: Must do it 8 times
-    // Data output DDR registers
-    inst oddrData: $sv::CC_ODDR #(
-        CLK_INV: 0 // 0: rising edge, 1: falling edge
-        ,
-    ) (
-        D0 : i_data   , // D0 data input
-        D1 : 0        , // D1 data input, don't care
-        CLK: i_clk    , // Clock input
-        DDR: 0        , // FF switch, don't care about switching
-        Q  : r_outData // Data output
-        ,
+    // Data ODDR registers
+    for i in 0..8 :g_data_o {
+        inst oddrData: $sv::CC_ODDR #(
+            CLK_INV: 0 // 0: rising edge, 1: falling edge
+            ,
+        ) (
+            D0 : i_data(i)     , // D0 data input
+            D1 : 0             , // D1 data input, don't care
+            CLK: i_clk         , // Clock input
+            DDR: 0             , // FF switch, don't care about switching
+            Q  : ddr_outData(i) // Data output
+            ,
+        );
+    }
+
+    // Data IDDR registers
+    for i in 0..8 :g_data_i {
+        inst iddrData: $sv::CC_IDDR #(
+            CLK_INV: 0 // 0: rising edge, 1: falling edge
+            ,
+        ) (
+            D  : ddr_inData(i), // D0 data input
+            CLK: i_clk        , // Clock input
+            Q0 : r_spare      , // Data output, don't care
+            Q1 : ddr_inData(i) // Data output
+            ,
+        );
+    }
+
+    // Clock OBUF
+    inst obufClk: $sv::CC_OBUF //(
+    //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
+    //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
+    //DRIVE("3"), // "3", "6", "9" or "12" mA
+    //SLEW("SLOW"), // "SLOW" or "FAST"
+    //DELAY_OBF(4'd0), // input delay: 0..15
+    //FF_OBF(1'b0) // 0: disable, 1: enable
+    //)
+     (
+        A: ddr_clk, // Input from FPGA-internal circuitry
+        O: o_clk  , // Output to device pin
     );
 
-    // Data input DDR registers
-    inst iddrData: $sv::CC_IDDR #(
-        CLK_INV: 0 // 0: rising edge, 1: falling edge
-        ,
-    ) (
-        D  : r_inData, // D0 data input
-        CLK: i_clk   , // Clock input
-        Q0 : r_spare , // Data input, don't care
-        Q1 : o_data   // Data input
-        ,    );
+    // Chip Enable OBUF
+    inst obufCe: $sv::CC_OBUF //(
+    //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
+    //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
+    //DRIVE("3"), // "3", "6", "9" or "12" mA
+    //SLEW("SLOW"), // "SLOW" or "FAST"
+    //DELAY_OBF(4'd0), // input delay: 0..15
+    //FF_OBF(1'b0) // 0: disable, 1: enable
+    //)
+    (
+        A: ddr_ce, // Input from FPGA-internal circuitry
+        O: o_ce  , // Output to device pin
+    );
 
-
-    // TODO: Add the buffers
+    // Data IOBUF
+    inst iobufData: $sv::CC_IOBUF //(
+        // PIN_NAME => "IO_NB_A0", -- IO_<Dir><Bank>_<Pin><Pin#>
+        // V_IO => "1.8", -- "1.2", "1.8" or "2.5" Volt
+        // DRIVE => "3", -- "3", "6", "9" or "12" mA
+        // SLEW => "SLOW", -- "SLOW" or "FAST"
+        // PULLUP => 0, -- 0: disable, 1: enable
+        // PULLDOWN => 0, -- 0: disable, 1: enable
+        // KEEPE => 0, -- 0: disable, 1: enable
+        // SCHMITT_TRIGGER => 0, -- 0: disable, 1: enable
+        // DELAY_IBF =>0, -- input delay: 0..15
+        // DELAY_OBF => 0, -- input delay: 0..15
+        // FF_IBF => 0, -- 0: disable, 1: enable
+        // FF_OBF => 0 -- 0: disable, 1: enable
+    //)
+    (
+        A: ddr_outData, // Input from FPGA-internal circuitry
+        T: i_tristate, // Active-low output enable signal from FPGA-internal circuitry
+        Y: ddr_inData, // Output to FPGA-internal circuitry
+        IO: io_data,  // Bidirectional inout to device pin
+    );
 }
