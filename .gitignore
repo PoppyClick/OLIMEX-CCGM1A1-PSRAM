@@ -4,6 +4,7 @@
 /dependencies
 *.f
 doc/
+sim/
 
 # Verilator
 obj_dir/

@@ -1,28 +1,30 @@
 /// # Module PSRAM PHY
 ///
-/// This module adds DDR and buffers to PSRAM signals,
-/// it ensure that all signals are synchronized.
+/// This module exists to add a FF as close as possible to the IO pads as possible.
+/// It should help to reduce skew between signals due to the difference in routing.
 ///
-/// Note: The IOBUF primitives of CC have a FF parameter which could be doing the same thing. + Delay
-///         TODO: Test without DDR and only with buffers
-/// The drive strength is set to 3mA by default, there is a 22R resistor on clock signal, and a 10k on CS
+/// Notes:
+/// * Verilator doesn't support 'Z' states, so the included test is pointless.
+/// * The IOBUF primitives of CC have a FF parameter which could be doing the same thing as the DDRs.
+/// * The drive strength is set to 3mA by default, there is a 22R (R54/R58) resistor on clock signal, and a 10k (R53/R57) on CE#.
+/// * Slew is set to slow by default. Must check if it matters in that context.
 
 module PsramPhy (
-    i_clk     : input  clock       ,
-    i_rst     : input  reset       ,
-    i_ce      : input  logic       ,
-    o_clk     : output logic       ,
-    o_ce      : output logic       ,
-    i_data    : input  logic    <8>,
-    o_data    : output logic    <8>,
-    io_data   : inout  tri logic<8>,
-    i_tristate: input  logic    <8>,
+    i_clk: input clock, // System Clock
+    // i_rst     : input  reset       , // System Reset
+    i_ce      : input  logic       , // From logic Chip Enable (CE#)
+    o_clk     : output logic       , // To PSRAM Clock
+    o_ce      : output logic       , // To PSRAM Chip Enable (CE#)
+    i_data    : input  logic    <8>, // From logic Data
+    o_data    : output logic    <8>, // To logic data
+    io_data   : inout  tri logic<8>, // To/From PSRAM data
+    i_tristate: input  logic       , // From logic data
 ) {
 
     var ddr_clk    : logic   ;
     var ddr_ce     : logic   ;
-    var ddr_outData: logic<8>;
-    var ddr_inData : logic<8>;
+    var ddr_outData: logic<8>; // To PSRAM
+    var ddr_inData : logic<8>; // From PSRAM
 
     var r_spare: logic<8>;
 
@@ -52,82 +54,123 @@ module PsramPhy (
         ,
     );
 
-    // Data ODDR registers
+    // Data ODDR registers (To PSRAM)
     for i in 0..8 :g_data_o {
         inst oddrData: $sv::CC_ODDR #(
             CLK_INV: 0 // 0: rising edge, 1: falling edge
             ,
         ) (
-            D0 : i_data(i)     , // D0 data input
+            D0 : i_data[i]     , // D0 data input
             D1 : 0             , // D1 data input, don't care
             CLK: i_clk         , // Clock input
             DDR: 0             , // FF switch, don't care about switching
-            Q  : ddr_outData(i) // Data output
-            ,
+            Q  : ddr_outData[i], // Data output
         );
     }
 
-    // Data IDDR registers
+    // Data IDDR registers (From PSRAM)
     for i in 0..8 :g_data_i {
         inst iddrData: $sv::CC_IDDR #(
             CLK_INV: 0 // 0: rising edge, 1: falling edge
             ,
         ) (
-            D  : ddr_inData(i), // D0 data input
+            D  : ddr_inData[i], // D0 data input
             CLK: i_clk        , // Clock input
-            Q0 : r_spare      , // Data output, don't care
-            Q1 : ddr_inData(i) // Data output
-            ,
+            Q0 : r_spare[i]   , // Data output, don't care
+            Q1 : o_data[i]    , // Data output
         );
     }
 
     // Clock OBUF
-    inst obufClk: $sv::CC_OBUF //(
-    //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
-    //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
-    //DRIVE("3"), // "3", "6", "9" or "12" mA
-    //SLEW("SLOW"), // "SLOW" or "FAST"
-    //DELAY_OBF(4'd0), // input delay: 0..15
-    //FF_OBF(1'b0) // 0: disable, 1: enable
-    //)
-     (
+    inst obufClk: $sv::CC_OBUF #(
+        //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
+        //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
+        //DRIVE("3"), // "3", "6", "9" or "12" mA
+        //SLEW("SLOW"), // "SLOW" or "FAST"
+        DELAY_OBF: 0, // input delay: 0..15
+        //FF_OBF(1'b0) // 0: disable, 1: enable
+    ) (
         A: ddr_clk, // Input from FPGA-internal circuitry
         O: o_clk  , // Output to device pin
     );
 
     // Chip Enable OBUF
-    inst obufCe: $sv::CC_OBUF //(
-    //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
-    //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
-    //DRIVE("3"), // "3", "6", "9" or "12" mA
-    //SLEW("SLOW"), // "SLOW" or "FAST"
-    //DELAY_OBF(4'd0), // input delay: 0..15
-    //FF_OBF(1'b0) // 0: disable, 1: enable
-    //)
-    (
+    inst obufCe: $sv::CC_OBUF #(
+        //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
+        //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
+        //DRIVE("3"), // "3", "6", "9" or "12" mA
+        //SLEW("SLOW"), // "SLOW" or "FAST"
+        DELAY_OBF: 0, // input delay: 0..15
+        //FF_OBF(1'b0) // 0: disable, 1: enable
+    ) (
         A: ddr_ce, // Input from FPGA-internal circuitry
         O: o_ce  , // Output to device pin
     );
 
     // Data IOBUF
-    inst iobufData: $sv::CC_IOBUF //(
-        // PIN_NAME => "IO_NB_A0", -- IO_<Dir><Bank>_<Pin><Pin#>
-        // V_IO => "1.8", -- "1.2", "1.8" or "2.5" Volt
-        // DRIVE => "3", -- "3", "6", "9" or "12" mA
-        // SLEW => "SLOW", -- "SLOW" or "FAST"
-        // PULLUP => 0, -- 0: disable, 1: enable
-        // PULLDOWN => 0, -- 0: disable, 1: enable
-        // KEEPE => 0, -- 0: disable, 1: enable
-        // SCHMITT_TRIGGER => 0, -- 0: disable, 1: enable
-        // DELAY_IBF =>0, -- input delay: 0..15
-        // DELAY_OBF => 0, -- input delay: 0..15
-        // FF_IBF => 0, -- 0: disable, 1: enable
-        // FF_OBF => 0 -- 0: disable, 1: enable
-    //)
-    (
-        A: ddr_outData, // Input from FPGA-internal circuitry
-        T: i_tristate, // Active-low output enable signal from FPGA-internal circuitry
-        Y: ddr_inData, // Output to FPGA-internal circuitry
-        IO: io_data,  // Bidirectional inout to device pin
-    );
+    for i in 0..8 :g_data_io {
+        inst iobufData: $sv::CC_IOBUF #(
+            // PIN_NAME => "IO_NB_A0", // IO_<Dir><Bank>_<Pin><Pin#>
+            // V_IO => "1.8", // "1.2", "1.8" or "2.5" Volt
+            // DRIVE => "3", // "3", "6", "9" or "12" mA
+            // SLEW => "SLOW", // "SLOW" or "FAST"
+            // PULLUP => 0, // 0: disable, 1: enable
+            // PULLDOWN => 0, // 0: disable, 1: enable
+            // KEEPE => 0, // 0: disable, 1: enable
+            // SCHMITT_TRIGGER => 0, // 0: disable, 1: enable
+            DELAY_IBF: 0, // input delay: 0..15
+            DELAY_OBF: 0, // input delay: 0..15
+            // FF_IBF => 0, // 0: disable, 1: enable
+            // FF_OBF => 0 // 0: disable, 1: enable
+        ) (
+            A : ddr_outData[i], // Input from FPGA-internal circuitry
+            T : i_tristate    , // Active-low output enable signal from FPGA-internal circuitry
+            Y : ddr_inData[i] , // Output to FPGA-internal circuitry
+            IO: io_data[i]    , // Bidirectional inout to device pin
+        );
+    }
 }
+
+#[test(test_PsramPhy, PsramPhy)]
+embed (cocotb) py{{{
+import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge
+
+@cocotb.test()
+async def test(dut):
+    # Init values
+    dut.i_ce.value = 1
+    dut.i_data.value = 0
+    dut.i_tristate.value = 0
+
+    # Start clock
+    clock = Clock(dut.i_clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await RisingEdge(dut.i_clk)
+
+    # Check output values (tristate = 0)
+    await RisingEdge(dut.i_clk)
+    # assert dut.i_data.value == dut.io_data.value, f"Wrong data value"
+    # assert dut.i_ce.value == dut.o_ce.value, f"Wrong CE# value"
+    await RisingEdge(dut.i_clk)
+
+    # Check values change (tristate = 0)
+    await RisingEdge(dut.i_clk)
+    dut.i_ce.value = 0
+    dut.i_data.value = 0xA5
+    await RisingEdge(dut.i_clk)
+    # assert dut.i_data.value == dut.io_data.value, f"Wrong data value"
+    # assert dut.i_ce.value == dut.o_ce.value, f"Wrong CE# value"
+    await RisingEdge(dut.i_clk)
+
+    # Check data input (tristate = 0)
+    await RisingEdge(dut.i_clk)
+    dut.i_tristate.value = 1
+    await RisingEdge(dut.i_clk)
+    # assert dut.io_data.value == "Z", f"Data bus is not 'Z' when i_tristate = 1"
+    await RisingEdge(dut.i_clk)
+    # dut.io_data.value = 0xEA
+    await RisingEdge(dut.i_clk)
+    # assert dut.o_data.value == dut.io_data.value, f"Wrong read data"
+}}}

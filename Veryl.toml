@@ -4,3 +4,10 @@ version = "0.1.0"
 [build]
 sources = ["src"]
 target = {type = "directory", path = "target"}
+
+[test]
+waveform_target = {type = "directory", path = "sim"}
+[test.verilator]
+# Replace "~/Tools/oss-cad-suite/share/yosys" with the output of "yosys-config --datdir" command
+compile_args = ["/home/julien/Tools/oss-cad-suite/share/yosys/gatemate/cells_sim.v",
+                "/home/julien/Tools/oss-cad-suite/share/yosys/gatemate/cells_bb.v"]
