@@ -1,24 +1,24 @@
 /// # Module PSRAM PHY
 ///
-/// This module exists to add a FF as close as possible to the IO pads as possible.
+/// This module exists to add a FF as close to the IO pads as possible.
 /// It should help to reduce skew between signals due to the difference in routing.
 ///
 /// Notes:
-/// * Verilator doesn't support 'Z' states, so the included test is pointless.
+/// * Verilator doesn't support 'Z' states, so the included test is pointless. But waves are still useful.
 /// * The IOBUF primitives of CC have a FF parameter which could be doing the same thing as the DDRs.
 /// * The drive strength is set to 3mA by default, there is a 22R (R54/R58) resistor on clock signal, and a 10k (R53/R57) on CE#.
 /// * Slew is set to slow by default. Must check if it matters in that context.
 
 module PsramPhy (
-    i_clk: input clock, // System Clock
-    // i_rst     : input  reset       , // System Reset
+    i_clk     : input  clock       , // System Clock
+    i_clk_tri : input  logic       , // Allows to put the clock in tristate while init
     i_ce      : input  logic       , // From logic Chip Enable (CE#)
-    o_clk     : output logic       , // To PSRAM Clock
+    o_clk     : output tri logic   , // To PSRAM Clock
     o_ce      : output logic       , // To PSRAM Chip Enable (CE#)
     i_data    : input  logic    <8>, // From logic Data
     o_data    : output logic    <8>, // To logic data
     io_data   : inout  tri logic<8>, // To/From PSRAM data
-    i_tristate: input  logic       , // From logic data
+    i_data_tri: input  logic    <8>, // From logic data
 ) {
 
     var ddr_clk    : logic   ;
@@ -26,7 +26,15 @@ module PsramPhy (
     var ddr_outData: logic<8>; // To PSRAM
     var ddr_inData : logic<8>; // From PSRAM
 
-    var r_spare: logic<8>;
+    var r_spare   : logic<8>;
+    var r_tristate: logic<8>;
+    var r_clk_tri : logic<8>;
+
+    // Register tristates
+    always_ff (i_clk) {
+        r_tristate = i_data_tri;
+        r_clk_tri  = i_clk_tri;
+    }
 
     // Clock ODDR register, r_clk signal is inverted
     inst oddrClk: $sv::CC_ODDR #(
@@ -87,11 +95,15 @@ module PsramPhy (
         //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
         //DRIVE("3"), // "3", "6", "9" or "12" mA
         //SLEW("SLOW"), // "SLOW" or "FAST"
+        //PULLUP(0), // 0: disable, 1: enable
+        //PULLDOWN(0), // 0: disable, 1: enable
+        //KEEPER(0), // 0: disable, 1: enable
         DELAY_OBF: 0, // input delay: 0..15
         //FF_OBF(1'b0) // 0: disable, 1: enable
     ) (
-        A: ddr_clk, // Input from FPGA-internal circuitry
-        O: o_clk  , // Output to device pin
+        A: ddr_clk  , // Input from FPGA-internal circuitry
+        T: i_clk_tri, // Active-low output enable signal from FPGA-internal circuitry
+        O: o_clk    , // Output to device pin
     );
 
     // Chip Enable OBUF
@@ -124,7 +136,7 @@ module PsramPhy (
             // FF_OBF => 0 // 0: disable, 1: enable
         ) (
             A : ddr_outData[i], // Input from FPGA-internal circuitry
-            T : i_tristate    , // Active-low output enable signal from FPGA-internal circuitry
+            T : i_data_tri[i] , // Active-low output enable signal from FPGA-internal circuitry
             Y : ddr_inData[i] , // Output to FPGA-internal circuitry
             IO: io_data[i]    , // Bidirectional inout to device pin
         );
@@ -142,7 +154,7 @@ async def test(dut):
     # Init values
     dut.i_ce.value = 1
     dut.i_data.value = 0
-    dut.i_tristate.value = 0
+    dut.i_data_tri.value = 0
 
     # Start clock
     clock = Clock(dut.i_clk, 10, unit="ns")
@@ -164,11 +176,11 @@ async def test(dut):
     # assert dut.i_ce.value == dut.o_ce.value, f"Wrong CE# value"
     await RisingEdge(dut.i_clk)
 
-    # Check data input (tristate = 0)
+    # Check data input (tristate = 1)
     await RisingEdge(dut.i_clk)
-    dut.i_tristate.value = 1
+    dut.i_data_tri.value = 0xFF
     await RisingEdge(dut.i_clk)
-    # assert dut.io_data.value == "Z", f"Data bus is not 'Z' when i_tristate = 1"
+    # assert dut.io_data.value == "Z", f"Data bus is not 'Z' when i_data_tri = 1s"
     await RisingEdge(dut.i_clk)
     # dut.io_data.value = 0xEA
     await RisingEdge(dut.i_clk)
