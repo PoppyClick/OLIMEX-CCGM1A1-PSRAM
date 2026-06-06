@@ -1,1 +1,179 @@
+/// # Module PSRAM Driver
+///
+/// This module contains the state machine responsible for driving the PSRAM signals.
+///
+/// ## Commands:
+/// |                |      | SPI Mode |      |             |     |           | QPI Mode |      |             |     |           |
+/// | Command        | Code | Cmd      | Addr | Wait Cycles | DIO | Max Freq. | Cmd      | Addr | Wait Cycles | DIO | Max Freq. |
+/// |----------------|------|----------|------|-------------|-----|-----------|----------|------|-------------|-----|-----------|
+/// | Read           | 03h  | S        | S    | 0           | S   | 33        | N/A      |      |             |     |           |
+/// | Fast Read      | 0Bh  | S        | S    | 8           | S   | 100       | N/A      |      |             |     |           |
+/// | Quad Read      | EBh  | S        | Q    | 6           | Q   | 100       | Q        | Q    | 6           | Q   | 100       |
+/// | Write          | 02h  | S        | S    | 0           | S   | 100       | Q        | Q    | 0           | Q   | 100       |
+/// | Quad Write     | 38h  | S        | Q    | 0           | Q   | 100       | Q        | Q    | 0           | Q   | 100       |
+/// | Enter QPI Mode | 35h  | S        | -    | -           | -   | 100       | N/A      |      |             |     |           |
+/// | Exit QPI Mode  | F5h  | N/A      |      |             |     |           | Q        | -    | -           | -   | 100       |
+/// Note: S = Serial IO, Q = Quad IO
 
+module PsramDriver #(
+    param InitCounterSize: u32   = 14, // 2**Number of clock cycles to await at Init, must be above 150µs
+    param SlowAccess     : logic = 0 , // Enables Slow commands (Read 0x03 & Write 0x02)
+) (
+    i_clk     : input  clock    , // System Clock
+    i_rst     : input  reset    , // System Reset
+    i_addr    : input  logic<24>, // Input address
+    i_data    : input  logic<16>, // Input data, for Write access
+    o_data    : output logic<16>, // Output data, for Read access
+    i_psdata  : input  logic<8> , // Input data PSRAM, for Read access
+    o_psdata  : output logic<8> , // Output data PSRAM, for Write access
+    o_ce      : output logic    , // Chip Enable
+    o_ready   : output logic    , // Ready signal handshake
+    i_valid   : input  logic    , // Valid signal handshake
+    i_type    : input  logic    , // Access type, Read = 0, Write = 1
+    i_qpi     : input  logic    , // Access mode, SPI = 0, QPI = 1
+    o_clk_tri : output logic    , // Disable clock during init
+    o_data_tri: output logic    , // Switch data direction
+) {
+
+    // Generic commands
+    const cmd_r      : logic<8> = if SlowAccess ? 3 : 11;
+    const cmd_qr     : logic<8> = 235; // 0xEB
+    const cmd_w      : logic<8> = 2; // 0x02
+    const cmd_qw     : logic<8> = 56; // 0x38
+    const cmd_ent_qpi: logic<8> = 53; // 0x35
+    const cmd_exi_qpi: logic<8> = 245; // 0xF5
+
+    // Generic wait
+    const wait_r : u8 = if SlowAccess ? 0 : 8;
+    const wait_qr: u8 = 6;
+    const wait_w : u8 = 0;
+    const wait_wr: u8 = 0;
+
+    // Config latch
+    var r_addr: logic<24>;
+    var r_data: logic<16>;
+    var r_type: logic    ;
+    var r_qpi : logic    ;
+
+    // Variables
+    var initCount: logic<InitCounterSize>;
+    var currMode : logic                 ;
+    var currCmd  : logic<8>              ;
+
+    // State machine
+    #[enum_encoding(onehot)]
+    enum t_sm {
+        s_Init,
+        s_Idle,
+        s_EnterQPI,
+        s_LeaveQPI,
+        s_Command,
+        s_Wait,
+        s_Address,
+        s_Data,
+        c,
+    }
+    var sm: t_sm;
+
+    always_comb {
+        currCmd = switch {
+            (~r_type & ~r_qpi): cmd_r,
+            (r_type & ~r_qpi) : cmd_w,
+            (~r_type & r_qpi) : cmd_qr,
+            (r_type & r_qpi)  : cmd_qw,
+            default           : 8'd0,
+        };
+    }
+
+    always_ff (i_clk, i_rst) {
+        if_reset {
+            // Init outputs
+            o_data     = 0;
+            o_ready    = 0;
+            o_clk_tri  = 1;
+            o_data_tri = 1;
+            o_ce       = 1;
+
+            // Init registers
+            r_addr    = 0;
+            r_data    = 0;
+            r_type    = 0;
+            r_qpi     = 0;
+            initCount = 0;
+            currMode  = 0;
+            sm        = t_sm::s_Init;
+        }
+
+        case sm {
+            // Init inputs and wait for 150µs
+            t_sm::s_Init: {
+                o_data     = 0;
+                o_ready    = 0;
+                o_clk_tri  = 1;
+                o_data_tri = 1;
+                o_ce       = 1;
+                o_psdata   = 0;
+                r_addr     = 0;
+                r_data     = 0;
+                r_type     = 0;
+                r_qpi      = 0;
+
+                // Count up to 2**InitCounterSize
+                if (initCount == 2 ** InitCounterSize) {
+                    initCount = 0;
+                    sm        = t_sm::s_Wait;
+                } else {
+                    initCount += 1;
+                }
+            }
+
+            // Await for i_valid = 1
+            t_sm::s_Idle: {
+                o_ready   = 1;
+                o_clk_tri = 0; // Activate clock output
+                o_ce      = 1;
+                if (i_valid) {
+                    o_ready = 0;
+                    r_addr  = i_addr;
+                    r_data  = i_data;
+                    r_type  = i_type;
+                    r_qpi   = i_qpi;
+
+                    // Either go directly to command state...
+                    if (r_qpi == currMode) {
+                        sm = t_sm::s_Command;
+                    } else {
+                        // ... Or change the QPI mode
+                        if (r_qpi) {
+                            sm = t_sm::s_EnterQPI;
+                        } else {
+                            sm = t_sm::s_LeaveQPI;
+                        }
+                    }
+                }
+            }
+
+            // Enter QPI mode
+            t_sm::s_EnterQPI: {
+                // TODO
+                sm = t_sm::s_Command;
+            }
+
+            // Leave QPI mode
+            t_sm::s_LeaveQPI: {
+                // TODO
+                sm = t_sm::s_Command;
+            }
+
+            // Send the command
+            t_sm::s_Command: {
+                o_ce       = 0;
+                o_data_tri = 0;
+
+            }
+
+            // Error: return to Init
+            default: sm = t_sm::s_Init;
+        }
+    }
+}
