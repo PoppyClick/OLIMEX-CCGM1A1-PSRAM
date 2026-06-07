@@ -14,7 +14,7 @@ module PsramPhy (
     i_clk     : input  clock       , // System Clock
     i_clk_tri : input  logic       , // Allows to put the clock in tristate while init
     i_ce      : input  logic       , // From logic Chip Enable (CE#)
-    o_clk     : output tri logic   , // To PSRAM Clock
+    o_clk     : output logic       , // To PSRAM Clock
     o_ce      : output logic       , // To PSRAM Chip Enable (CE#)
     i_data    : input  logic    <8>, // From logic Data
     o_data    : output logic    <8>, // To logic data
@@ -28,12 +28,12 @@ module PsramPhy (
     var ddr_inData : logic<8>; // From PSRAM
 
     var r_spare   : logic<8>;
-    var r_tristate: logic<8>;
-    var r_clk_tri : logic<8>;
+    var r_data_tri: logic<8>;
+    var r_clk_tri : logic   ;
 
     // Register tristates
     always_ff (i_clk) {
-        r_tristate = i_data_tri;
+        r_data_tri = i_data_tri;
         r_clk_tri  = i_clk_tri;
     }
 
@@ -90,8 +90,8 @@ module PsramPhy (
         );
     }
 
-    // Clock OBUF
-    inst obufClk: $sv::CC_OBUF #(
+    // Clock TOBUF
+    inst obufClk: $sv::CC_TOBUF #(
         //PIN_NAME("IO_NB_A0"), // IO_<Dir><Bank>_<Pin><Pin#>
         //V_IO("1.8"), // "1.2", "1.8" or "2.5" Volt
         //DRIVE("3"), // "3", "6", "9" or "12" mA
@@ -103,7 +103,7 @@ module PsramPhy (
         //FF_OBF(1'b0) // 0: disable, 1: enable
     ) (
         A: ddr_clk  , // Input from FPGA-internal circuitry
-        T: i_clk_tri, // Active-low output enable signal from FPGA-internal circuitry
+        T: r_clk_tri, // Active-low output enable signal from FPGA-internal circuitry
         O: o_clk    , // Output to device pin
     );
 
@@ -137,7 +137,7 @@ module PsramPhy (
             // FF_OBF => 0 // 0: disable, 1: enable
         ) (
             A : ddr_outData[i], // Input from FPGA-internal circuitry
-            T : i_data_tri[i] , // Active-low output enable signal from FPGA-internal circuitry
+            T : r_data_tri[i] , // Active-low output enable signal from FPGA-internal circuitry
             Y : ddr_inData[i] , // Output to FPGA-internal circuitry
             IO: io_data[i]    , // Bidirectional inout to device pin
         );

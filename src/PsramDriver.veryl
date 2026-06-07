@@ -1,6 +1,12 @@
 /// # Module PSRAM Driver
 ///
 /// This module contains the state machine responsible for driving the PSRAM signals.
+/// Since there are 2 PSRAM chips in parallel, each chip will get the same commands and same addresses.
+/// So, each access reads and writes 16 bits of data.
+///
+/// ## How to drive:
+///
+/// TODO
 ///
 /// ## Commands:
 /// |                |      | SPI Mode |      |             |     |           | QPI Mode |      |             |     |           |
@@ -14,6 +20,7 @@
 /// | Enter QPI Mode | 35h  | S        | -    | -           | -   | 100       | N/A      |      |             |     |           |
 /// | Exit QPI Mode  | F5h  | N/A      |      |             |     |           | Q        | -    | -           | -   | 100       |
 /// Note: S = Serial IO, Q = Quad IO
+///
 
 module PsramDriver #(
     param InitCounterSize: u32   = 14, // 2**Number of clock cycles to await at Init, must be above 150µs
@@ -24,15 +31,15 @@ module PsramDriver #(
     i_addr    : input  logic<24>, // Input address
     i_data    : input  logic<16>, // Input data, for Write access
     o_data    : output logic<16>, // Output data, for Read access
-    i_psdata  : input  logic<8> , // Input data PSRAM, for Read access
-    o_psdata  : output logic<8> , // Output data PSRAM, for Write access
-    o_ce      : output logic    , // Chip Enable
     o_ready   : output logic    , // Ready signal handshake
     i_valid   : input  logic    , // Valid signal handshake
     i_type    : input  logic    , // Access type, Read = 0, Write = 1
     i_qpi     : input  logic    , // Access mode, SPI = 0, QPI = 1
     o_clk_tri : output logic    , // Disable clock during init
-    o_data_tri: output logic    , // Switch data direction
+    o_ce      : output logic    , // Chip Enable
+    i_psdata  : input  logic<8> , // Input data PSRAM, for Read access
+    o_psdata  : output logic<8> , // Output data PSRAM, for Write access
+    o_data_tri: output logic<8> , // Switch data direction, one for each data pin
 ) {
 
     // Generic commands
@@ -43,22 +50,29 @@ module PsramDriver #(
     const cmd_ent_qpi: logic<8> = 53; // 0x35
     const cmd_exi_qpi: logic<8> = 245; // 0xF5
 
-    // Generic wait
+    // Generic number of wait cycles
     const wait_r : u8 = if SlowAccess ? 0 : 8;
     const wait_qr: u8 = 6;
     const wait_w : u8 = 0;
     const wait_wr: u8 = 0;
 
-    // Config latch
-    var r_addr: logic<24>;
-    var r_data: logic<16>;
-    var r_type: logic    ;
-    var r_qpi : logic    ;
+    // Config registering
+    var r_addr: logic<24>; // Address of the access
+    var r_data: logic<16>; // Input/Output data
+    var r_type: logic    ; // R/W# access
+    var r_qpi : logic    ; // QPI/SPI# access
 
     // Variables
-    var initCount: logic<InitCounterSize>;
-    var currMode : logic                 ;
-    var currCmd  : logic<8>              ;
+    var initCount    : logic<InitCounterSize>; // Used to count to at least 150µs at startup
+    var currMode     : logic                 ; // 0 = SPI (default); 1 = QPI
+    var bitCount     : u8                    ;
+    let nbBitPerCycle: u8                     = if currMode ? 4 : 1; // If device in QPI, 4 bits are sent per cycles
+
+    // // Shift registers
+    // var SrCmd : logic<8> ; // Shift registers
+    // var SrAddr: logic<24>; // Shift registers
+    // var SrData: logic<16>; // Shift registers
+
 
     // State machine
     #[enum_encoding(onehot)]
@@ -75,23 +89,13 @@ module PsramDriver #(
     }
     var sm: t_sm;
 
-    always_comb {
-        currCmd = switch {
-            (~r_type & ~r_qpi): cmd_r,
-            (r_type & ~r_qpi) : cmd_w,
-            (~r_type & r_qpi) : cmd_qr,
-            (r_type & r_qpi)  : cmd_qw,
-            default           : 8'd0,
-        };
-    }
-
     always_ff (i_clk, i_rst) {
         if_reset {
             // Init outputs
             o_data     = 0;
             o_ready    = 0;
             o_clk_tri  = 1;
-            o_data_tri = 1;
+            o_data_tri = 255;
             o_ce       = 1;
 
             // Init registers
@@ -100,7 +104,7 @@ module PsramDriver #(
             r_type    = 0;
             r_qpi     = 0;
             initCount = 0;
-            currMode  = 0;
+            currMode  = 0; // SPI mode
             sm        = t_sm::s_Init;
         }
 
@@ -110,7 +114,7 @@ module PsramDriver #(
                 o_data     = 0;
                 o_ready    = 0;
                 o_clk_tri  = 1;
-                o_data_tri = 1;
+                o_data_tri = 255;
                 o_ce       = 1;
                 o_psdata   = 0;
                 r_addr     = 0;
@@ -132,6 +136,7 @@ module PsramDriver #(
                 o_ready   = 1;
                 o_clk_tri = 0; // Activate clock output
                 o_ce      = 1;
+                bitCount  = 0;
                 if (i_valid) {
                     o_ready = 0;
                     r_addr  = i_addr;
@@ -142,6 +147,7 @@ module PsramDriver #(
                     // Either go directly to command state...
                     if (r_qpi == currMode) {
                         sm = t_sm::s_Command;
+
                     } else {
                         // ... Or change the QPI mode
                         if (r_qpi) {
@@ -156,20 +162,41 @@ module PsramDriver #(
             // Enter QPI mode
             t_sm::s_EnterQPI: {
                 // TODO
-                sm = t_sm::s_Command;
+                currMode = 1;
+                sm       = t_sm::s_Command;
+                let cmd     : logic = cmd_ent_qpi;
             }
 
             // Leave QPI mode
             t_sm::s_LeaveQPI: {
                 // TODO
-                sm = t_sm::s_Command;
+                currMode = 0;
+                sm       = t_sm::s_Command;
+                let cmd     : logic = cmd_exi_qpi;
             }
 
             // Send the command
             t_sm::s_Command: {
                 o_ce       = 0;
-                o_data_tri = 0;
+                o_data_tri = if currMode ? 0 : 238;
 
+                let cmd: logic = switch {
+                    (~r_type & ~r_qpi): cmd_r,
+                    (r_type & ~r_qpi) : cmd_w,
+                    (~r_type & r_qpi) : cmd_qr,
+                    (r_type & r_qpi)  : cmd_qw,
+                    default           : 8'd0,
+                };
+
+                if (bitCount >: 7) {
+                    // Go to address state
+                    sm       = t_sm::s_Address;
+                    bitCount = 0;
+                } else {
+                    bitCount      += nbBitPerCycle;
+                    o_psdata[0:3] =  cmd[(7 - bitCount)-:4];
+                    o_psdata[4:7] =  cmd[(7 - bitCount)-:4];
+                }
             }
 
             // Error: return to Init
